@@ -3,7 +3,7 @@ import glob
 import shutil
 from tqdm import tqdm
 
-def move_small_step_files(source_dir='step', target_dir='small_step_files'):
+def move_small_step_files(source_dir='0002_step_1000', target_dir='0002_step_500'):
     """
     将500行以内的.step文件移动到新文件夹中，
     保持原有的文件夹结构
@@ -26,22 +26,22 @@ def move_small_step_files(source_dir='step', target_dir='small_step_files'):
     total_files = 0
     moved_files = 0
     
+    # 动态获取所有子文件夹
+    all_folders = [d for d in os.listdir(source_dir) if os.path.isdir(os.path.join(source_dir, d))]
+    
     # 首先计算需要处理的文件总数
     print("正在统计文件数量...")
-    for i in range(1000):
-        folder_name = f"{i:08d}"
+    for folder_name in all_folders:
         folder_path = os.path.join(source_dir, folder_name)
-        if os.path.exists(folder_path):
-            step_files = glob.glob(os.path.join(folder_path, "*.step"))
-            total_files += len(step_files)
+        step_files = glob.glob(os.path.join(folder_path, "*.step"))
+        total_files += len(step_files)
     
     print(f"找到 {total_files} 个.step文件")
     
     # 使用tqdm创建进度条
     with tqdm(total=total_files, desc="处理进度") as pbar:
-        # 遍历从00000000到00000999的文件夹
-        for i in range(1000):
-            folder_name = f"{i:08d}"
+        # 遍历所有子文件夹
+        for folder_name in all_folders:
             source_folder = os.path.join(source_dir, folder_name)
             target_folder = os.path.join(target_dir, folder_name)
             

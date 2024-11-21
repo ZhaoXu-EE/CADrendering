@@ -2,7 +2,7 @@ import os
 import glob
 from tqdm import tqdm
 
-def analyze_step_files(base_dir='small_step_files'):
+def analyze_step_files(base_dir='0002_step_500'):
     """
     统计step文件夹中的文件数量和分布情况
     

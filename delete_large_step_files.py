@@ -14,7 +14,7 @@ def is_folder_empty(folder_path):
     """
     return len(os.listdir(folder_path)) == 0
 
-def delete_large_step_files(base_dir='step'):
+def delete_large_step_files(base_dir='0002_step_1000'):
     """
     遍历指定目录下的所有子文件夹中的.step文件，
     如果文件行数超过1000行则删除该文件，
@@ -34,7 +34,7 @@ def delete_large_step_files(base_dir='step'):
     deleted_folders = 0
     
     # 首先计算需要处理的文件总数
-    all_folders = [f"{i:08d}" for i in range(1000)]
+    all_folders = [d for d in os.listdir(base_dir) if os.path.isdir(os.path.join(base_dir, d))]
     print("正在统计文件数量...")
     for folder_name in all_folders:
         folder_path = os.path.join(base_dir, folder_name)
