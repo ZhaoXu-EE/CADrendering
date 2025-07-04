@@ -15,7 +15,7 @@ STEP 实体重排与重新编号工具
 
 使用示例
 --------
-1. **就地处理单个文件**（推荐）：
+1. **就地处理单个文件**：
 
     python reorder.py --in-place model.step
 
@@ -39,8 +39,8 @@ STEP 实体重排与重新编号工具
 ---------------
 - `--in-place`：直接覆盖原始文件。
 - `--group {type, strict, none}`：控制类型聚类方式：
-    - `type`（默认）：尽量聚类相同类型；
-    - `strict`：同类实体尽量连续出现；
+    - `type`：尽量聚类相同类型；
+    - `strict`（默认）：同类实体尽量连续出现；
     - `none`：不聚类，仅保证拓扑无环。
 - `--no-renum`：不修改实体编号，仅排序。
 - `--out-dir DIR`：输出至指定目录（保留子目录结构）。
@@ -237,8 +237,8 @@ def main():
     ap.add_argument("--in-place", action="store_true",
                     help="overwrite original file(s)")
     ap.add_argument("--group", choices=["type","strict","none"], default="strict",
-                help=("type   = soft cluster by entity type (default); "
-                      "strict = contiguous cluster when possible; "
+                help=("type   = soft cluster by entity type; "
+                      "strict = contiguous cluster when possible (default); "
                       "none   = pure topo sort"))
     ap.add_argument("--no-renum", action="store_true",
                     help="keep original #IDs (forward refs are still removed)")
@@ -281,8 +281,8 @@ def main():
             process_file(f, dst, args.group, not args.no_renum)
 
         except Exception as e:
-            print(f"\n[跳过] 处理文件失败: {f}")
-            print(f"错误原因: {e}")
+            print(f"\n[SKIP] Failed to process file: {f}")
+            print(f"Error reason: {e}")
 
 if __name__ == "__main__":
     main()
