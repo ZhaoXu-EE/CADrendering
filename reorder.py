@@ -1,52 +1,49 @@
 #!/usr/bin/env python3
 """
-功能
-----
+STEP 实体重排与重新编号工具
+=============================
 
-1. **消除 forward reference**：保证任何被引用的实体在首次被引用前已定义。
-2. **相似实体聚类**：在满足拓扑约束的前提下，尽量把“相似”实体（默认=类型相同）排在一起。
-3. **连续重新编号**：将 DATA 区所有实体的 `#` 编号重新映射为从 **#1** 开始的连续递增序列，
-   并同步更新实体间的引用关系。
+功能简介
+--------
+本工具用于预处理 STEP 文件的实体定义，特别适用于 LLM 数据生成任务，具备以下功能：
 
-用法
-----
+1. **消除 forward reference**：确保每个实体在首次被引用前已被定义。
+2. **相似实体聚类**：在满足依赖拓扑的前提下，尽量将相同类型实体聚集在一起（可选）。
+3. **重新编号实体 ID**：将 `#` 开头的实体编号统一重新映射为从 `#1` 开始的连续递增序列。
 
-基本命令格式：
+支持处理单个文件或整个目录中的多个 `.step` / `.stp` 文件，支持保持子目录结构。
 
-    python reorder.py [输入文件/文件夹] [输出文件/文件夹] [选项]
+使用示例
+--------
+1. **就地处理单个文件**（推荐）：
 
-示例：
+    python reorder.py --in-place model.step
 
-1. **就地处理 STEP 文件**（推荐方式）  
-   消除 forward reference，按类型聚类，重新编号实体：
+2. **输出至指定文件**：
 
-    python reorder.py --in-place part.step
+    python reorder.py model.step out.step
 
-2. **输出到指定文件**  
-   和上面相同功能，但将结果写入新文件 `out.step`：
+3. **关闭类型聚类，仅进行拓扑排序与编号**：
 
-    python reorder.py part.step out.step
+    python reorder.py model.step out.step --group none
 
-3. **关闭聚类，仅保留拓扑排序和编号**  
-   不按实体类型聚类，仅按依赖关系拓扑排序并重新编号：
+4. **仅消除 forward reference，不重新编号**：
 
-    python reorder.py part.step out.step --group none
+    python reorder.py model.step out.step --no-renum
 
-4. **保持原始 ID，不进行重新编号**  
-   仍会消除 forward reference，但保留原始的 `#ID` 编号（不推荐用于 LLM 训练）：
+5. **批量处理目录中所有 STEP 文件，输出至目标目录**：
 
-    python reorder.py part.step out.step --no-renum
+    python reorder.py input_dir/ --out-dir output_dir/
 
-5. **批量处理文件夹中的所有 STEP 文件**  
-   将 `models/` 文件夹中所有 `.step` / `.stp` 文件处理后写入 `out_dir/`，保留原有子目录结构：
-
-    python reorder.py models/ --out-dir out_dir/
-
-可选参数说明：
-- `--in-place`：就地修改输入文件，不指定时默认写入新的文件。
-- `--group {type, none}`：控制是否聚类相同类型的实体（默认：type）。
-- `--no-renum`：不重新编号 `#ID`，保留原始编号。
-- `--out-dir DIR`：指定输出根目录，用于批量处理多个文件。
+命令行参数说明
+---------------
+- `--in-place`：直接覆盖原始文件。
+- `--group {type, strict, none}`：控制类型聚类方式：
+    - `type`（默认）：尽量聚类相同类型；
+    - `strict`：同类实体尽量连续出现；
+    - `none`：不聚类，仅保证拓扑无环。
+- `--no-renum`：不修改实体编号，仅排序。
+- `--out-dir DIR`：输出至指定目录（保留子目录结构）。
 """
 
 import argparse, pathlib, re, sys, heapq, itertools
@@ -94,7 +91,7 @@ def entity_type(block: str) -> str:
     return m.group(1) if m else ''
 
 def build_graph(entities):
-    id2ent, deps, indeg, typ, order = {}, defaultdict(set), Counter(), {}, {}
+    id2ent, deps, rev, indeg, typ, order = {}, defaultdict(set), defaultdict(set), {}, {}, {}
     for idx, block in enumerate(entities):
         m = re.match(r'\s*#(\d+)\s*=', block)
         if not m:
@@ -107,37 +104,89 @@ def build_graph(entities):
             rid = int(r)
             if rid == eid:
                 continue
-            deps[eid].add(rid)
-    for v, S in deps.items():
-        for u in S:
-            indeg[u] += 1
-    # ensure all nodes exist in indeg
+            deps[eid].add(rid)  # eid 依赖 rid
+            rev[rid].add(eid)  # 反向：rid 被 eid 依赖
+    # 新：统计“仍有多少依赖尚未满足”
+    for n, S in deps.items():
+        indeg[n] = len(S)
     for k in id2ent:
         indeg.setdefault(k, 0)
-    return id2ent, deps, indeg, typ, order
+    # 计算每个实体的深度（最长依赖链长度）
+    # 深度定义为从叶子节点到当前节点的最长路径长度
+    depth, memo = {}, {}
+    def get_depth(n):
+        if n in memo:
+            return memo[n]
+        if not deps[n]:                # 叶子
+            memo[n] = 0
+        else:
+            memo[n] = 1 + max(get_depth(c) for c in deps[n])
+        return memo[n]
+    for k in id2ent:
+        depth[k] = get_depth(k)
 
-# ---------- Kahn（带“相似优先”） ----------
-def topo_grouped(id2ent, deps, indeg, typ, order, group_mode):
-    ready  = []
-    out    = []
-    cur_ty = None
+    return id2ent, rev, indeg, typ, order, depth
 
-    def push(node):
-        same = 0 if (cur_ty and typ[node] == cur_ty and group_mode != 'none') else 1
-        heapq.heappush(ready, (same, typ[node], order[node], node))
+# ---------- Kahn（按“依赖深度 → 是否同类 → 原行号”优先） ----------
+def topo_grouped(id2ent, rev, indeg, order, depth, typ, group_mode='type'):
+    """
+    • 依赖全部满足 (indeg == 0) 的节点进入优先队列。
+    • 队列键 = (depth, order)：
+        - depth  = 由 build_graph 预计算的最长依赖链长度
+        - order  = 原文件行号，保证同层保持原相对顺序
+    这样即可自动把叶子节点（CARTESIAN_POINT, DIRECTION…）排在最前，
+    无需维护手工类型优先级表。
+    """
+    # --------- 准备容器 ---------
+    if group_mode == 'strict':
+        # {type: [(depth, order, id), ...]}
+        ready_by_type = defaultdict(list)
+        def push(n):
+            heapq.heappush(ready_by_type[typ[n]], (depth[n], order[n], n))
+    else:   # type / none → 继续用单一堆
+        ready = []
+        cur_ty = None
+        def push(n):
+            same = 0 if (group_mode != 'none' and cur_ty == typ[n]) else 1
+            heapq.heappush(ready, (depth[n], same, order[n], n))
 
     for n in id2ent:
         if indeg[n] == 0:
             push(n)
 
-    while ready:
-        same, tname, _, n = heapq.heappop(ready)
-        out.append(n)
-        cur_ty = tname if group_mode != 'none' else None
-        for m in deps[n]:
-            indeg[m] -= 1
-            if indeg[m] == 0:
-                push(m)
+    out = []
+    if group_mode == 'strict':
+        cur_ty = None
+        while ready_by_type:
+            # 尽量延续当前类型
+            if cur_ty and ready_by_type.get(cur_ty):
+                q = ready_by_type[cur_ty]
+            else:
+                # 选一个“最靠前”的新类型
+                cur_ty = min(ready_by_type,
+                             key=lambda k: ready_by_type[k][0][:2])  # depth→order
+                q = ready_by_type[cur_ty]
+            _, _, n = heapq.heappop(q)
+            # 1) 把当前节点加入输出序列
+            out.append(n)
+            # 2) 释放其后继节点
+            for m in rev[n]:
+                indeg[m] -= 1
+                if indeg[m] == 0:
+                    push(m)
+            if not q:
+                ready_by_type.pop(cur_ty, None)
+    else:   # 原来的 soft / none
+        while ready:
+            _, _, _, n = heapq.heappop(ready)
+            cur_ty = typ[n]
+            # 1) 输出当前节点
+            out.append(n)
+            # 2) 释放其后继节点
+            for m in rev[n]:
+                indeg[m] -= 1
+                if indeg[m] == 0:
+                    push(m)
 
     # 若存在环，按原始顺序追加
     remaining = [k for k, v in indeg.items() if v > 0]
@@ -172,8 +221,8 @@ def process_file(src: pathlib.Path,
     lines           = src.read_text(errors='ignore').splitlines(keepends=True)
     head, data, foot= split_sections(lines)
     ents            = collect_entities(data)
-    id2ent,deps,indeg,typ,order = build_graph(ents)
-    sorted_ents     = topo_grouped(id2ent,deps,indeg,typ,order, group_mode)
+    id2ent, rev, indeg, typ, order, depth = build_graph(ents)
+    sorted_ents = topo_grouped(id2ent, rev, indeg, order, depth, typ, group_mode)
     if renum:
         sorted_ents = renumber_entities(sorted_ents)
     out_lines       = head + sorted_ents + foot
@@ -187,8 +236,10 @@ def main():
                     help="output file/dir; omitted means <name>_sorted.stp")
     ap.add_argument("--in-place", action="store_true",
                     help="overwrite original file(s)")
-    ap.add_argument("--group", choices=["type","none"], default="type",
-                    help="type = cluster by entity type (default); none = pure topo sort")
+    ap.add_argument("--group", choices=["type","strict","none"], default="strict",
+                help=("type   = soft cluster by entity type (default); "
+                      "strict = contiguous cluster when possible; "
+                      "none   = pure topo sort"))
     ap.add_argument("--no-renum", action="store_true",
                     help="keep original #IDs (forward refs are still removed)")
     ap.add_argument("--out-dir",
@@ -206,28 +257,32 @@ def main():
     for f in tqdm(files, desc="Processing files", unit="file"):
         dst = None
 
-        # --out-dir 优先级最高
-        if args.out_dir:
-            out_root = pathlib.Path(args.out_dir).resolve()
-            rel_path = f.resolve().relative_to(root)
-            dst      = out_root / rel_path           # 保留子目录
-            dst.parent.mkdir(parents=True, exist_ok=True)
+        try:
+            # --out-dir 优先级最高
+            if args.out_dir:
+                out_root = pathlib.Path(args.out_dir).resolve()
+                rel_path = f.resolve().relative_to(root)
+                dst      = out_root / rel_path           # 保留子目录
+                dst.parent.mkdir(parents=True, exist_ok=True)
 
-        # 若给了 positional output 参数，但没用 --out-dir
-        elif not args.in_place:
-            if args.output:
-                o = pathlib.Path(args.output)
-                if o.is_dir() or len(files) > 1:
-                    rel_path = f.resolve().relative_to(root)
-                    dst      = o / rel_path
-                    dst.parent.mkdir(parents=True, exist_ok=True)
+            # 若给了 positional output 参数，但没用 --out-dir
+            elif not args.in_place:
+                if args.output:
+                    o = pathlib.Path(args.output)
+                    if o.is_dir() or len(files) > 1:
+                        rel_path = f.resolve().relative_to(root)
+                        dst      = o / rel_path
+                        dst.parent.mkdir(parents=True, exist_ok=True)
+                    else:
+                        dst = o
                 else:
-                    dst = o
-            else:
-                dst = f.with_stem(f.stem + "_sorted")
-                # dst = dst.with_stem(dst.stem + "_sorted")
+                    dst = f.with_stem(f.stem + "_sorted")
 
-        process_file(f, dst, args.group, not args.no_renum)
+            process_file(f, dst, args.group, not args.no_renum)
+
+        except Exception as e:
+            print(f"\n[跳过] 处理文件失败: {f}")
+            print(f"错误原因: {e}")
 
 if __name__ == "__main__":
     main()
